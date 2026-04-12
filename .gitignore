@@ -1,0 +1,21 @@
+# Secrets
+.env
+
+# Data
+trips.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
