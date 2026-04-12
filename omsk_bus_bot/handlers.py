@@ -120,26 +120,86 @@ async def cb_inline_cancel(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("Команда отменена.")
 
 
-# ── /start, /help ──────────────────────────────────────────────
+# ── /start, /menu, /help ───────────────────────────────────────
+
+def _menu_keyboard() -> InlineKeyboardMarkup:
+    """Inline-клавиатура главного меню."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        # Рейсы
+        [
+            InlineKeyboardButton(text="➕ Добавить", callback_data="cmd:add"),
+            InlineKeyboardButton(text="📋 Рейсы", callback_data="cmd:trips"),
+        ],
+        [
+            InlineKeyboardButton(text="✏️ Изменить", callback_data="cmd:edit"),
+            InlineKeyboardButton(text="🗑 Удалить", callback_data="cmd:delete"),
+        ],
+        [
+            InlineKeyboardButton(text="📍 Остановки", callback_data="cmd:setstops"),
+        ],
+        # Уведомления
+        [
+            InlineKeyboardButton(text="🔔 Уведомления", callback_data="cmd:notify"),
+            InlineKeyboardButton(text="🚶 Пора на выход", callback_data="cmd:go"),
+        ],
+        [
+            InlineKeyboardButton(text="🚪 Время на выход", callback_data="cmd:setexit"),
+        ],
+        # Поиск
+        [
+            InlineKeyboardButton(text="🔎 Маршрут", callback_data="cmd:route"),
+            InlineKeyboardButton(text="🚏 Расписание", callback_data="cmd:ksearch"),
+        ],
+        # Прочее
+        [
+            InlineKeyboardButton(text="❓ Справка", callback_data="cmd:help"),
+        ],
+    ])
+
 
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     await message.answer(
         "Привет! Я бот для маршрутов общественного транспорта Омска (через 2GIS).\n\n"
-        "Команды:\n"
-        "/add — добавить новый рейс\n"
-        "/trips — мои рейсы\n"
-        "/edit — изменить рейс\n"
-        "/delete — удалить рейс\n"
-        "/setstops — настроить остановки (фильтр + расписание)\n\n"
-        "/notify — ежедневные уведомления о прибытии\n"
-        "/go — пора на выход (разовое уведомление)\n"
-        "/setexit — время на выход из дома (мин)\n\n"
-        "/route — получить маршрут для рейса\n"
-        "/ksearch — расписание между остановками (kudikina.ru)\n\n"
-        "/help — справка\n"
-        "/cancel — отменить текущую команду"
+        "Нажмите /menu или кнопку ниже, чтобы открыть меню.",
+        reply_markup=_menu_keyboard(),
     )
+
+
+@router.message(Command("menu"))
+async def cmd_menu(message: Message):
+    await message.answer("Выберите действие:", reply_markup=_menu_keyboard())
+
+
+@router.callback_query(F.data.startswith("cmd:"))
+async def cb_menu_command(callback: CallbackQuery, state: FSMContext):
+    """Обработка нажатий на кнопки главного меню — диспетчеризация по имени."""
+    cmd = callback.data.split(":", 1)[1]
+    await callback.answer()
+    msg = callback.message
+
+    if cmd == "add":
+        await cmd_add(msg, state)
+    elif cmd == "trips":
+        await cmd_trips(msg)
+    elif cmd == "edit":
+        await cmd_edit(msg, state)
+    elif cmd == "delete":
+        await cmd_delete(msg)
+    elif cmd == "setstops":
+        await cmd_setstops(msg, state)
+    elif cmd == "notify":
+        await cmd_notify(msg, state)
+    elif cmd == "go":
+        await cmd_go(msg, state)
+    elif cmd == "setexit":
+        await cmd_setexit(msg, state)
+    elif cmd == "route":
+        await cmd_route(msg)
+    elif cmd == "ksearch":
+        await cmd_ksearch(msg, state)
+    elif cmd == "help":
+        await cmd_help(msg)
 
 
 @router.message(Command("help"))
@@ -327,7 +387,7 @@ async def _finish_add_trip(message: Message, state: FSMContext, end_address: str
 
 @router.message(Command("trips"))
 async def cmd_trips(message: Message):
-    trips = storage.get_trips(message.from_user.id)
+    trips = storage.get_trips(message.chat.id)
     if not trips:
         await message.answer("У вас нет сохранённых рейсов. Добавьте командой /add.")
         return
@@ -351,7 +411,7 @@ async def cmd_trips(message: Message):
 
 @router.message(Command("route"))
 async def cmd_route(message: Message):
-    trips = storage.get_trips(message.from_user.id)
+    trips = storage.get_trips(message.chat.id)
     if not trips:
         await message.answer("Нет сохранённых рейсов. Добавьте командой /add.")
         return
@@ -454,7 +514,7 @@ async def _send_kudikina_extra(message: Message, trip: Trip):
 
 @router.message(Command("setstops"))
 async def cmd_setstops(message: Message, state: FSMContext):
-    trips = storage.get_trips(message.from_user.id)
+    trips = storage.get_trips(message.chat.id)
     if not trips:
         await message.answer("Нет сохранённых рейсов.")
         return
@@ -740,7 +800,7 @@ async def _show_setstops_result(message: Message, trip: Optional[Trip]):
 
 @router.message(Command("setexit"))
 async def cmd_setexit(message: Message, state: FSMContext):
-    trips = storage.get_trips(message.from_user.id)
+    trips = storage.get_trips(message.chat.id)
     if not trips:
         await message.answer("Нет сохранённых рейсов.")
         return
@@ -817,7 +877,7 @@ async def setexit_minutes(message: Message, state: FSMContext):
 
 @router.message(Command("notify"))
 async def cmd_notify(message: Message, state: FSMContext):
-    trips = storage.get_trips(message.from_user.id)
+    trips = storage.get_trips(message.chat.id)
     if not trips:
         await message.answer("Нет сохранённых рейсов.")
         return
@@ -973,7 +1033,7 @@ async def set_notify_window(message: Message, state: FSMContext):
 
 @router.message(Command("edit"))
 async def cmd_edit(message: Message, state: FSMContext):
-    trips = storage.get_trips(message.from_user.id)
+    trips = storage.get_trips(message.chat.id)
     if not trips:
         await message.answer("Нет сохранённых рейсов.")
         return
@@ -1261,7 +1321,7 @@ async def _finish_edit_end(message: Message, state: FSMContext, address: str, la
 
 @router.message(Command("go"))
 async def cmd_go(message: Message, state: FSMContext):
-    trips = storage.get_trips(message.from_user.id)
+    trips = storage.get_trips(message.chat.id)
     if not trips:
         await message.answer("Нет сохранённых рейсов.")
         return
@@ -1393,7 +1453,7 @@ async def go_set_minutes(message: Message, state: FSMContext):
 
 @router.message(Command("delete"))
 async def cmd_delete(message: Message):
-    trips = storage.get_trips(message.from_user.id)
+    trips = storage.get_trips(message.chat.id)
     if not trips:
         await message.answer("Нет сохранённых рейсов.")
         return

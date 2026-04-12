@@ -24,22 +24,7 @@ async def on_startup(bot: Bot):
     """Запуск фоновых задач и настройка меню при старте бота."""
     # Меню команд
     await bot.set_my_commands([
-        # Рейсы
-        BotCommand(command="add", description="Добавить новый рейс"),
-        BotCommand(command="trips", description="Мои рейсы"),
-        BotCommand(command="edit", description="Изменить рейс"),
-        BotCommand(command="delete", description="Удалить рейс"),
-        BotCommand(command="setstops", description="Настроить остановки (фильтр + расписание)"),
-        # Уведомления
-        BotCommand(command="notify", description="Ежедневные уведомления"),
-        BotCommand(command="go", description="Пора на выход"),
-        BotCommand(command="setexit", description="Время на выход из дома"),
-        # Поиск
-        BotCommand(command="route", description="Получить маршрут"),
-        BotCommand(command="ksearch", description="Расписание между остановками"),
-        # Прочее
-        BotCommand(command="help", description="Справка"),
-        BotCommand(command="cancel", description="Отменить текущую команду"),
+        BotCommand(command="menu", description="Открыть меню"),
     ])
     logger.info("Меню команд установлено")
 
