@@ -144,6 +144,7 @@ def _menu_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="🚪 Время на выход", callback_data="cmd:setexit"),
+            InlineKeyboardButton(text="🔇 Откл. уведомления", callback_data="cmd:muteall"),
         ],
         # Поиск
         [
@@ -198,6 +199,8 @@ async def cb_menu_command(callback: CallbackQuery, state: FSMContext):
         await cmd_route(msg)
     elif cmd == "ksearch":
         await cmd_ksearch(msg, state)
+    elif cmd == "muteall":
+        await cmd_muteall(msg)
     elif cmd == "help":
         await cmd_help(msg)
 
@@ -214,7 +217,8 @@ async def cmd_help(message: Message):
         "🔔 Уведомления:\n"
         "/notify — ежедневные уведомления\n"
         "/go — разовое «пора на выход»\n"
-        "/setexit — время на выход из дома\n\n"
+        "/setexit — время на выход из дома\n"
+        "/muteall — отключить все уведомления разом\n\n"
         "🔎 Поиск:\n"
         "/route — маршрут для рейса\n"
         "/ksearch — расписание между остановками\n\n"
@@ -230,8 +234,47 @@ async def cmd_help(message: Message):
         "📍 Точное расписание из kudikina.ru:\n"
         "В /setstops задайте обе остановки (старт + финиш) — "
         "бот будет показывать расписание всех автобусов на этом участке "
-        "и учитывать его в уведомлениях."
+        "и учитывать его в уведомлениях.\n\n"
+        "⚠️ Мониторинг просроченных автобусов:\n"
+        "Если автобус приходит чуть раньше, чем вы просили уведомить, "
+        "бот всё равно пришлёт уведомление с пометкой ⚠️ «Автобус скоро». "
+        "Это помогает не пропустить рейс, который подошёл немного раньше "
+        "вашего запаса времени."
     )
+
+
+# ── /muteall — отключить все уведомления ─────────────────────
+
+@router.message(Command("muteall"))
+async def cmd_muteall(message: Message):
+    user_id = message.chat.id
+    trips = storage.get_trips(user_id)
+    if not trips:
+        await message.answer("Нет сохранённых рейсов.")
+        return
+
+    count = 0
+    for trip in trips:
+        changed = False
+        if trip.notify_minutes is not None:
+            trip.notify_minutes = None
+            changed = True
+        if trip.go_notify_minutes is not None:
+            trip.go_notify_minutes = None
+            trip.go_notify_from = None
+            trip.go_notify_to = None
+            trip.go_notify_date = None
+            changed = True
+        if changed:
+            storage.update_trip(user_id, trip)
+            count += 1
+
+    if count == 0:
+        await message.answer("Активных уведомлений нет.")
+    else:
+        await message.answer(
+            f"🔇 Все уведомления отключены ({count} рейс{'ов' if count > 4 else 'а' if 1 < count < 5 else ''})."
+        )
 
 
 # ── /add — добавление рейса ────────────────────────────────────

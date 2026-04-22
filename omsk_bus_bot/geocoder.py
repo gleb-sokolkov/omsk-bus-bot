@@ -7,7 +7,7 @@ from typing import Optional
 
 import aiohttp
 
-from .config import TWOGIS_API_KEY, TWOGIS_PLACES_URL, TWOGIS_REGIONS_URL, PLACES_LOCALE
+from .config import TWOGIS_API_KEY, TWOGIS_PLACES_URL, TWOGIS_REGIONS_URL, TWOGIS_REGION_ID, PLACES_LOCALE
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +104,9 @@ async def geocode(query: str, region_id: int = None, city_name: str = None, limi
     if region_id is None and city_name:
         region_id = await resolve_region_id(city_name)
         if region_id is None:
-            raise ValueError(f"Не удалось определить region_id для города «{city_name}»")
+            # Fallback на region_id из конфига
+            logger.warning("Regions API не вернул region_id для '%s', используем TWOGIS_REGION_ID=%s", city_name, TWOGIS_REGION_ID)
+            region_id = TWOGIS_REGION_ID
 
     params = {
         "key": TWOGIS_API_KEY,

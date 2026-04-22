@@ -8,7 +8,7 @@ from typing import Optional
 from aiogram import Bot
 
 from .api_client import fetch_routes, filter_by_start_stop
-from .config import DEFAULT_CITY_SLUG
+from .config import DEFAULT_CITY_SLUG, NOTIFY_TAIL_MINUTES
 from .kudikina_client import search_routes as kudikina_search, KudikinaRoute
 from .models import Trip, RouteInfo, _minutes_to_hhmm, _hhmm_to_minutes
 from .schedule_enricher import enrich_routes
@@ -73,8 +73,12 @@ def _build_kudikina_notification_text(
     header_label: str = "Напоминание",
     exit_minutes: int = 0,
     target_boarding_min: Optional[int] = None,
+    is_urgent: bool = False,
 ) -> str:
     """Сформировать текст уведомления по данным kudikina."""
+    if is_urgent:
+        header_emoji = "⚠️"
+        header_label = "Автобус скоро"
     upcoming = kd_route.upcoming_times(count=3, from_minutes=target_boarding_min)
     times_str = ", ".join(upcoming) if upcoming else ""
     exit_hint = f" (с учётом {exit_minutes} мин на выход)" if exit_minutes else ""
@@ -100,8 +104,12 @@ def _build_notification_text(
     header_label: str = "Напоминание",
     exit_minutes: int = 0,
     target_boarding_min: Optional[int] = None,
+    is_urgent: bool = False,
 ) -> str:
     """Сформировать текст уведомления с полным описанием маршрута."""
+    if is_urgent:
+        header_emoji = "⚠️"
+        header_label = "Автобус скоро"
     stop_name = route.start_stop_name or "остановка"
     exit_hint = f" (с учётом {exit_minutes} мин на выход)" if exit_minutes else ""
     header = (
@@ -136,6 +144,7 @@ async def _check_trip_notifications(
 
     # lead_time = notify + exit (уведомить заранее с учётом времени на выход)
     lead = trip.notify_minutes + trip.exit_minutes
+    tail = NOTIFY_TAIL_MINUTES  # расширение окна вниз для «опаздывающих» автобусов
 
     try:
         routes = await _fetch_and_filter(trip)
@@ -151,11 +160,13 @@ async def _check_trip_notifications(
     for route in routes:
         schedule_times = route.all_schedule_minutes()
         for sched_min in schedule_times:
-            key = _notification_key(user_id, trip.id, sched_min)
+            minutes_until = sched_min - now_minutes
+            is_tail = minutes_until < lead
+            prefix = "tail_" if is_tail else ""
+            key = _notification_key(user_id, f"{prefix}{trip.id}", sched_min)
             if key in _sent_notifications:
                 continue
-            minutes_until = sched_min - now_minutes
-            if lead <= minutes_until <= lead + 10:
+            if (lead - tail) <= minutes_until <= lead + 10:
                 if best is None or minutes_until < best[0]:
                     best = (minutes_until, sched_min, route)
 
@@ -163,27 +174,32 @@ async def _check_trip_notifications(
     kd_routes = await _fetch_kudikina_routes(trip)
     for kd_route in kd_routes:
         for sched_min in kd_route.all_schedule_minutes():
-            key = _notification_key(user_id, f"kd_{trip.id}", sched_min)
+            minutes_until = sched_min - now_minutes
+            is_tail = minutes_until < lead
+            prefix = "tail_" if is_tail else ""
+            key = _notification_key(user_id, f"{prefix}kd_{trip.id}", sched_min)
             if key in _sent_notifications:
                 continue
-            minutes_until = sched_min - now_minutes
-            if lead <= minutes_until <= lead + 10:
+            if (lead - tail) <= minutes_until <= lead + 10:
                 if best is None or minutes_until < best[0]:
                     best = (minutes_until, sched_min, kd_route)
 
     if best:
         minutes_until, sched_min, source = best
+        is_urgent = minutes_until < lead
+        urgent_prefix = "tail_" if is_urgent else ""
         if isinstance(source, RouteInfo):
-            text = _build_notification_text(trip.name, source, minutes_until, exit_minutes=trip.exit_minutes, target_boarding_min=sched_min)
-            nkey = _notification_key(user_id, trip.id, sched_min)
+            text = _build_notification_text(trip.name, source, minutes_until, exit_minutes=trip.exit_minutes, target_boarding_min=sched_min, is_urgent=is_urgent)
+            nkey = _notification_key(user_id, f"{urgent_prefix}{trip.id}", sched_min)
         else:
-            text = _build_kudikina_notification_text(trip.name, source, minutes_until, exit_minutes=trip.exit_minutes, target_boarding_min=sched_min)
-            nkey = _notification_key(user_id, f"kd_{trip.id}", sched_min)
+            text = _build_kudikina_notification_text(trip.name, source, minutes_until, exit_minutes=trip.exit_minutes, target_boarding_min=sched_min, is_urgent=is_urgent)
+            nkey = _notification_key(user_id, f"{urgent_prefix}kd_{trip.id}", sched_min)
         try:
             await bot.send_message(user_id, text)
             _sent_notifications.add(nkey)
             logger.info(
-                "Регулярное уведомление: user=%s trip=%s bus_at=%s source=%s",
+                "Регулярное уведомление%s: user=%s trip=%s bus_at=%s source=%s",
+                " (urgent)" if is_urgent else "",
                 user_id, trip.id, _minutes_to_hhmm(sched_min),
                 "kudikina" if isinstance(source, KudikinaRoute) else "2gis",
             )
@@ -251,6 +267,7 @@ async def _check_go_notification(
 
     # lead_time = go_notify + exit
     lead = trip.go_notify_minutes + trip.exit_minutes
+    tail = NOTIFY_TAIL_MINUTES
 
     try:
         routes = await _fetch_and_filter(trip)
@@ -265,11 +282,13 @@ async def _check_go_notification(
     for route in routes:
         schedule_times = route.all_schedule_minutes()
         for sched_min in schedule_times:
-            key = _notification_key(user_id, f"go_{trip.id}", sched_min)
+            minutes_until = sched_min - now_minutes
+            is_tail = minutes_until < lead
+            prefix = "tail_" if is_tail else ""
+            key = _notification_key(user_id, f"{prefix}go_{trip.id}", sched_min)
             if key in _sent_notifications:
                 continue
-            minutes_until = sched_min - now_minutes
-            if lead <= minutes_until <= lead + 10:
+            if (lead - tail) <= minutes_until <= lead + 10:
                 if best is None or minutes_until < best[0]:
                     best = (minutes_until, sched_min, route)
 
@@ -277,16 +296,20 @@ async def _check_go_notification(
     kd_routes = await _fetch_kudikina_routes(trip)
     for kd_route in kd_routes:
         for sched_min in kd_route.all_schedule_minutes():
-            key = _notification_key(user_id, f"go_kd_{trip.id}", sched_min)
+            minutes_until = sched_min - now_minutes
+            is_tail = minutes_until < lead
+            prefix = "tail_" if is_tail else ""
+            key = _notification_key(user_id, f"{prefix}go_kd_{trip.id}", sched_min)
             if key in _sent_notifications:
                 continue
-            minutes_until = sched_min - now_minutes
-            if lead <= minutes_until <= lead + 10:
+            if (lead - tail) <= minutes_until <= lead + 10:
                 if best is None or minutes_until < best[0]:
                     best = (minutes_until, sched_min, kd_route)
 
     if best:
         minutes_until, sched_min, source = best
+        is_urgent = minutes_until < lead
+        urgent_prefix = "tail_" if is_urgent else ""
         if isinstance(source, RouteInfo):
             text = _build_notification_text(
                 trip.name, source, minutes_until,
@@ -294,8 +317,9 @@ async def _check_go_notification(
                 header_label="Пора на выход",
                 exit_minutes=trip.exit_minutes,
                 target_boarding_min=sched_min,
+                is_urgent=is_urgent,
             )
-            nkey = _notification_key(user_id, f"go_{trip.id}", sched_min)
+            nkey = _notification_key(user_id, f"{urgent_prefix}go_{trip.id}", sched_min)
         else:
             text = _build_kudikina_notification_text(
                 trip.name, source, minutes_until,
@@ -303,13 +327,15 @@ async def _check_go_notification(
                 header_label="Пора на выход",
                 exit_minutes=trip.exit_minutes,
                 target_boarding_min=sched_min,
+                is_urgent=is_urgent,
             )
-            nkey = _notification_key(user_id, f"go_kd_{trip.id}", sched_min)
+            nkey = _notification_key(user_id, f"{urgent_prefix}go_kd_{trip.id}", sched_min)
         try:
             await bot.send_message(user_id, text)
             _sent_notifications.add(nkey)
             logger.info(
-                "Гоу-уведомление: user=%s trip=%s bus_at=%s source=%s",
+                "Гоу-уведомление%s: user=%s trip=%s bus_at=%s source=%s",
+                " (urgent)" if is_urgent else "",
                 user_id, trip.id, _minutes_to_hhmm(sched_min),
                 "kudikina" if isinstance(source, KudikinaRoute) else "2gis",
             )

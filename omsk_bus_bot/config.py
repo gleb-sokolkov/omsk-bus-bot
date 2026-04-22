@@ -41,5 +41,8 @@ TWOGIS_REGION_ID = int(os.getenv("TWOGIS_REGION_ID", "2"))
 # Kudikina.ru — slug города для расписаний
 DEFAULT_CITY_SLUG = os.getenv("DEFAULT_CITY_SLUG", "omsk")
 
+# Уведомления — «хвост» для мониторинга просроченных маршрутов (мин)
+NOTIFY_TAIL_MINUTES = int(os.getenv("NOTIFY_TAIL_MINUTES", "5"))
+
 # Файл хранилища рейсов
 TRIPS_FILE = os.getenv("TRIPS_FILE", "trips.json")

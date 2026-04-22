@@ -1,0 +1,7 @@
+2026-04-23 01:05:35,736 [INFO] omsk_bus_bot.bot: Бот запускается...
+2026-04-23 01:05:36,111 [INFO] omsk_bus_bot.bot: Меню команд установлено
+2026-04-23 01:05:36,112 [INFO] omsk_bus_bot.bot: Фоновый планировщик уведомлений запущен
+2026-04-23 01:05:36,112 [INFO] aiogram.dispatcher: Start polling
+2026-04-23 01:05:36,112 [INFO] omsk_bus_bot.scheduler: Планировщик уведомлений запущен (интервал 60 сек)
+2026-04-23 01:05:36,235 [INFO] aiogram.dispatcher: Run polling for bot @OCRSGS_bot id=1465159769 - 'Omsk-Bus-Bot'
+2026-04-23 01:06:30,629 [INFO] aiogram.event: Update id=232388357 is handled. Duration 543 ms by bot id=1465159769
