@@ -120,6 +120,174 @@ async def cb_inline_cancel(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("Команда отменена.")
 
 
+# ── Выбор автобуса (ride/nextbus/unlock) ──────────────────────
+
+from .scheduler import lock_bus, unlock_trip, get_cached_body, _locked_keyboard, _build_locked_text
+
+
+@router.callback_query(F.data.startswith("ride:"))
+async def cb_ride(callback: CallbackQuery):
+    """Пользователь выбрал «Поеду на этом» — залочить автобус."""
+    parts = callback.data.split(":")
+    if len(parts) != 4:
+        await callback.answer("Ошибка данных.", show_alert=True)
+        return
+    _, trip_id, bus_number, sched_min_str = parts
+    try:
+        sched_min = int(sched_min_str)
+    except ValueError:
+        await callback.answer("Ошибка данных.", show_alert=True)
+        return
+
+    user_id = callback.from_user.id
+    from .models import _minutes_to_hhmm, _now_minutes
+    minutes_until = sched_min - _now_minutes()
+
+    if minutes_until <= 0:
+        await callback.answer("Этот автобус уже ушёл.", show_alert=True)
+        return
+
+    trip = storage.get_trip(user_id, trip_id)
+    trip_name = trip.name if trip else "?"
+    exit_minutes = trip.exit_minutes if trip else 0
+
+    # Подтягиваем подробности маршрута из кеша
+    body = get_cached_body(user_id, trip_id, bus_number, sched_min)
+
+    # Формируем текст и обновляем сообщение
+    text = _build_locked_text(bus_number, sched_min, minutes_until, trip_name, exit_minutes, body_text=body)
+    keyboard = _locked_keyboard(trip_id)
+
+    try:
+        await callback.message.edit_text(text, reply_markup=keyboard)
+    except Exception:
+        pass
+
+    # Залочить — message_id берём из текущего сообщения
+    lock_bus(
+        user_id, trip_id, bus_number, sched_min,
+        chat_id=callback.message.chat.id,
+        message_id=callback.message.message_id,
+    )
+    time_str = _minutes_to_hhmm(sched_min)
+    await callback.answer(f"🚌 Еду на {bus_number} ({time_str})")
+
+
+@router.callback_query(F.data.startswith("nextbus:"))
+async def cb_nextbus(callback: CallbackQuery):
+    """Выбрать следующий автобус после ушедшего."""
+    parts = callback.data.split(":")
+    if len(parts) != 4:
+        await callback.answer("Ошибка данных.", show_alert=True)
+        return
+    _, trip_id, bus_number, sched_min_str = parts
+    try:
+        sched_min = int(sched_min_str)
+    except ValueError:
+        await callback.answer("Ошибка данных.", show_alert=True)
+        return
+
+    user_id = callback.from_user.id
+    from .models import _minutes_to_hhmm, _now_minutes
+    minutes_until = sched_min - _now_minutes()
+
+    if minutes_until <= 0:
+        await callback.answer("Этот автобус тоже уже ушёл.", show_alert=True)
+        return
+
+    trip = storage.get_trip(user_id, trip_id)
+    trip_name = trip.name if trip else "?"
+    exit_minutes = trip.exit_minutes if trip else 0
+
+    body = get_cached_body(user_id, trip_id, bus_number, sched_min)
+    text = _build_locked_text(bus_number, sched_min, minutes_until, trip_name, exit_minutes, body_text=body)
+    keyboard = _locked_keyboard(trip_id)
+
+    try:
+        await callback.message.edit_text(text, reply_markup=keyboard)
+    except Exception:
+        pass
+
+    lock_bus(
+        user_id, trip_id, bus_number, sched_min,
+        chat_id=callback.message.chat.id,
+        message_id=callback.message.message_id,
+    )
+    time_str = _minutes_to_hhmm(sched_min)
+    await callback.answer(f"🚌 Еду на {bus_number} ({time_str})")
+
+
+@router.callback_query(F.data.startswith("unlock:"))
+async def cb_unlock(callback: CallbackQuery):
+    """Вернуться ко всем маршрутам — одно сообщение с компактными подробностями."""
+    trip_id = callback.data.split(":", 1)[1]
+    user_id = callback.from_user.id
+    unlock_trip(user_id, trip_id)
+
+    from .scheduler import get_cached_routes, _ride_keyboard
+    from .models import _minutes_to_hhmm, _now_minutes
+
+    trip = storage.get_trip(user_id, trip_id)
+    lead = 0
+    exit_minutes = 0
+    trip_name = "?"
+    if trip:
+        notify = trip.go_notify_minutes or trip.notify_minutes or 0
+        lead = notify + trip.exit_minutes
+        exit_minutes = trip.exit_minutes
+        trip_name = trip.name
+
+    cached = get_cached_routes(user_id, trip_id)
+    now_min = _now_minutes()
+    # Только будущие
+    upcoming = [(bn, sm, body) for bn, sm, body in cached if sm > now_min]
+
+    await callback.answer("↩️ Уведомления возобновлены")
+
+    if upcoming:
+        # Группируем по номеру автобуса — показываем ближайший рейс каждого
+        seen_buses: set[str] = set()
+        entries: list[tuple[str, int, int, str]] = []  # (bn, sm, minutes_left, body)
+        for bn, sm, body in upcoming:
+            if bn not in seen_buses:
+                seen_buses.add(bn)
+                entries.append((bn, sm, sm - now_min, body))
+
+        lines = [f"↩️ Ближайшие автобусы для «{trip_name}»:\n"]
+        buttons = []
+        for bn, sm, minutes_left, body in entries[:5]:
+            time_str = _minutes_to_hhmm(sm)
+            emoji = "⚠️" if lead and minutes_left < lead else "🚌"
+            lines.append(f"{emoji} {bn} в {time_str} (через {minutes_left} мин)")
+            # Добавляем первые 2 строки тела (расписание + направление)
+            for bline in body.split("\n")[:2]:
+                if bline.strip():
+                    lines.append(f"  {bline}")
+            lines.append("")
+
+            buttons.append([InlineKeyboardButton(
+                text=f"{emoji} Поеду на {bn} в {time_str}",
+                callback_data=f"ride:{trip_id}:{bn}:{sm}",
+            )])
+
+        text = "\n".join(lines).rstrip()
+        if len(text) > 4000:
+            text = text[:4000] + "\n... (сокращено)"
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+        try:
+            await callback.message.edit_text(text, reply_markup=keyboard)
+        except Exception:
+            pass
+    else:
+        try:
+            await callback.message.edit_text(
+                "↩️ Вернулись ко всем маршрутам. Уведомления продолжатся."
+            )
+        except Exception:
+            pass
+
+
 # ── /start, /menu, /help ───────────────────────────────────────
 
 def _menu_keyboard() -> InlineKeyboardMarkup:
@@ -226,8 +394,8 @@ async def cmd_help(message: Message):
         "🚌 Ежедневная поездка на работу:\n"
         "Создайте рейс /add → настройте остановку старта /setstops "
         "(в выдаче останутся только маршруты от вашей остановки) → "
-        "включите уведомления /notify за 10 мин в окне 07:00–08:00. "
-        "Каждое утро бот напомнит о ближайшем автобусе.\n\n"
+        "включите уведомления /notify с запасом 10 мин в окне 07:00–08:00. "
+        "Бот найдёт ближайший автобус, до которого не менее 10 мин, и уведомит.\n\n"
         "⏰ Опаздываете и нужно быстро узнать, когда автобус:\n"
         "Нажмите /go — бот пришлёт разовое уведомление "
         "о ближайшем автобусе с учётом времени на выход (/setexit).\n\n"
@@ -235,11 +403,11 @@ async def cmd_help(message: Message):
         "В /setstops задайте обе остановки (старт + финиш) — "
         "бот будет показывать расписание всех автобусов на этом участке "
         "и учитывать его в уведомлениях.\n\n"
-        "⚠️ Мониторинг просроченных автобусов:\n"
-        "Если автобус приходит чуть раньше, чем вы просили уведомить, "
-        "бот всё равно пришлёт уведомление с пометкой ⚠️ «Автобус скоро». "
-        "Это помогает не пропустить рейс, который подошёл немного раньше "
-        "вашего запаса времени."
+        "🚌 Выбор автобуса:\n"
+        "В каждом уведомлении есть кнопка «Поеду на этом». "
+        "Нажмите — бот покажет обратный отсчёт до выбранного автобуса "
+        "и перестанет присылать другие уведомления. "
+        "Если не успели — предложит следующий рейс или вернёт ко всем маршрутам."
     )
 
 
@@ -960,7 +1128,7 @@ async def cb_notify(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer(
         f"Рейс: «{trip.name}»\n"
         f"Уведомления: {current}\n\n"
-        f"За сколько минут до прибытия автобуса вас уведомить?\n"
+        f"Минимальный запас времени до автобуса (в минутах)?\n"
         f"Введите число (например: 10) или «0» чтобы выключить:{exit_note}"
     )
 
@@ -1026,7 +1194,7 @@ async def set_notify_window(message: Message, state: FSMContext):
         exit_hint = f" + {trip.exit_minutes} мин на выход = {minutes + trip.exit_minutes} мин" if trip.exit_minutes else ""
         await message.answer(
             f"🔔 Уведомления для «{trip.name}» включены!\n"
-            f"Напомню за {minutes} мин до автобуса{exit_hint} в промежутке {trip.notify_from}–{trip.notify_to}."
+            f"Уведомлю о ближайшем автобусе не раньше чем через {minutes} мин{exit_hint} в промежутке {trip.notify_from}–{trip.notify_to}."
         )
         await state.clear()
         return
@@ -1067,7 +1235,7 @@ async def set_notify_window(message: Message, state: FSMContext):
     exit_hint = f" + {trip.exit_minutes} мин на выход = {minutes + trip.exit_minutes} мин" if trip.exit_minutes else ""
     await message.answer(
         f"🔔 Уведомления для «{trip.name}» включены!\n"
-        f"Напомню за {minutes} мин до автобуса{exit_hint} в промежутке {time_from}–{time_to}."
+        f"Уведомлю о ближайшем автобусе не раньше чем через {minutes} мин{exit_hint} в промежутке {time_from}–{time_to}."
     )
     await state.clear()
 
@@ -1415,7 +1583,7 @@ async def cb_go(callback: CallbackQuery, state: FSMContext):
     exit_note = f"\n💡 Время на выход ({trip.exit_minutes} мин) будет добавлено автоматически." if trip.exit_minutes else ""
     await callback.message.answer(
         f"Рейс: «{trip.name}»\n\n"
-        f"За сколько минут до ближайшего автобуса вас уведомить?\n"
+        f"Минимальный запас времени до автобуса (в минутах)?\n"
         f"Введите число (например: 10):{exit_note}"
     )
 
@@ -1429,7 +1597,7 @@ async def cb_go_set(callback: CallbackQuery, state: FSMContext):
     await state.set_state(GoNotifyStates.waiting_minutes)
     exit_note = f"\n💡 Время на выход ({trip.exit_minutes} мин) будет добавлено автоматически." if trip and trip.exit_minutes else ""
     await callback.message.answer(
-        f"За сколько минут до ближайшего автобуса вас уведомить?\n"
+        f"Минимальный запас времени до автобуса (в минутах)?\n"
         f"Введите число (например: 10):{exit_note}"
     )
 
@@ -1487,7 +1655,7 @@ async def go_set_minutes(message: Message, state: FSMContext):
     exit_hint = f" + {trip.exit_minutes} мин на выход = {minutes + trip.exit_minutes} мин" if trip.exit_minutes else ""
     await message.answer(
         f"🟢 Гоу-уведомление для «{trip.name}» активировано!\n"
-        f"Уведомлю за {minutes} мин до ближайшего автобуса{exit_hint}.\n"
+        f"Уведомлю о ближайшем автобусе не раньше чем через {minutes} мин{exit_hint}.\n"
         f"Окно: {go_from}–{go_to} (после этого отключится автоматически)."
     )
 
